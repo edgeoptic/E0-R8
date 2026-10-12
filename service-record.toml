@@ -1,0 +1,4 @@
+revision = "r3"
+model = "EO-R8"
+recovery_mode = "mirror"
+scope = "installations commissioned with remote replication"
