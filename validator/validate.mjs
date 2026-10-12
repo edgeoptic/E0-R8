@@ -1,10 +1,9 @@
-import { createHash } from 'node:crypto'
-
 const target = 'diagnostic-request.toml'
-const baseBytes = Buffer.from('recovery_mode = "local-only"\n')
-const repairedBytes = Buffer.from('recovery_mode = "mirror"\n')
-const shaPattern = /^[a-f0-9]{40}$/
-const attemptPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
+const encoder = new TextEncoder()
+const baseBytes = encoder.encode('request_id = ""\nrecovery_mode = "local-only"\n')
+const shaPattern = /^[a-f0-9]{40}$(?![\s\S])/
+const attemptPattern =
+  /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$(?![\s\S])/
 
 export class ValidationError extends Error {
   constructor(code) {
@@ -27,14 +26,19 @@ function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0
 }
 
-function gitBlobHash(bytes) {
-  return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
+async function gitBlobHash(bytes) {
+  const prefix = encoder.encode(`blob ${bytes.length}\0`)
+  const data = new Uint8Array(prefix.length + bytes.length)
+  data.set(prefix)
+  data.set(bytes, prefix.length)
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', data))
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function validateContext(value) {
   const context = record(value, 'INVALID_CONTEXT')
   requireValue(
-    positiveInteger(context.repositoryId) &&
+    context.repositoryId === 1416038012 &&
       positiveInteger(context.pullNumber) &&
       positiveInteger(context.authorId),
     'INVALID_CONTEXT',
@@ -48,7 +52,8 @@ function validateContext(value) {
     'INVALID_CONTEXT',
   )
   requireValue(
-    typeof context.attemptId === 'string' && attemptPattern.test(context.attemptId),
+    context.attemptId === undefined ||
+      (typeof context.attemptId === 'string' && attemptPattern.test(context.attemptId)),
     'INVALID_CONTEXT',
   )
   return context
@@ -72,17 +77,8 @@ function validatePull(value, context) {
     'PULL_NOT_READY',
   )
   requireValue(
-    pull.changed_files === 1 && pull.additions === 1 && pull.deletions === 1,
+    pull.changed_files === 1 && pull.additions === 2 && pull.deletions === 2,
     'EXTRA_CHANGES',
-  )
-  requireValue(
-    typeof pull.body === 'string' && Buffer.byteLength(pull.body, 'utf8') <= 4096,
-    'INVALID_ATTEMPT_FIELD',
-  )
-  const fields = pull.body.split(/\r?\n/).filter((line) => line.startsWith('Dead-Channel-Attempt:'))
-  requireValue(
-    fields.length === 1 && fields[0] === `Dead-Channel-Attempt: ${context.attemptId}`,
-    'INVALID_ATTEMPT_FIELD',
   )
   return pull
 }
@@ -132,24 +128,33 @@ function validateTree(value, commitValue, expectedCommitSha) {
   return entries
 }
 
-function validateBlob(value, entry, expectedBytes) {
+async function validateBlob(value, entry) {
   const blob = record(value, 'INVALID_BLOB')
   requireValue(
     blob.encoding === 'base64' &&
-      blob.size === expectedBytes.length &&
-      entry.size === expectedBytes.length,
+      Number.isSafeInteger(blob.size) &&
+      blob.size > 0 &&
+      blob.size <= 128 &&
+      entry.size === blob.size,
     'INVALID_BLOB',
   )
   requireValue(typeof blob.content === 'string' && blob.content.length <= 256, 'BLOB_LIMIT')
   const encoded = blob.content.replace(/\n/g, '')
   requireValue(/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) && encoded.length % 4 === 0, 'INVALID_BASE64')
-  const bytes = Buffer.from(encoded, 'base64')
-  requireValue(bytes.toString('base64') === encoded && bytes.equals(expectedBytes), 'WRONG_REPAIR')
-  const sha = gitBlobHash(bytes)
+  let decoded
+  try {
+    decoded = atob(encoded)
+  } catch {
+    throw new ValidationError('INVALID_BASE64')
+  }
+  requireValue(btoa(decoded) === encoded && decoded.length === blob.size, 'INVALID_BASE64')
+  const bytes = Uint8Array.from(decoded, (char) => char.charCodeAt(0))
+  const sha = await gitBlobHash(bytes)
   requireValue(blob.sha === sha && entry.sha === sha, 'BLOB_ID_MISMATCH')
+  return decoded
 }
 
-export function validateDiagnostic(captureValue, contextValue) {
+export async function validateDiagnostic(captureValue, contextValue) {
   const context = validateContext(contextValue)
   const capture = record(captureValue, 'INVALID_CAPTURE')
   validatePull(capture.pullBefore, context)
@@ -161,7 +166,7 @@ export function validateDiagnostic(captureValue, contextValue) {
       !Object.hasOwn(file, 'previous_filename'),
     'EXTRA_CHANGES',
   )
-  requireValue(file.additions === 1 && file.deletions === 1 && file.changes === 2, 'EXTRA_CHANGES')
+  requireValue(file.additions === 2 && file.deletions === 2 && file.changes === 4, 'EXTRA_CHANGES')
   const base = validateTree(capture.baseTree, capture.baseCommit, context.frozenBaseSha)
   const head = validateTree(capture.headTree, capture.headCommit, context.expectedHeadSha)
   requireValue(base.size === head.size, 'EXTRA_CHANGES')
@@ -175,18 +180,25 @@ export function validateDiagnostic(captureValue, contextValue) {
       'EXTRA_CHANGES',
     )
   }
-  validateBlob(capture.baseBlob, base.get(target), baseBytes)
-  validateBlob(capture.headBlob, head.get(target), repairedBytes)
+  const baseText = await validateBlob(capture.baseBlob, base.get(target))
+  requireValue(baseText === new TextDecoder().decode(baseBytes), 'WRONG_BASE_CONTENT')
+  const headText = await validateBlob(capture.headBlob, head.get(target))
+  const match = /^request_id = "([a-f0-9-]+)"\nrecovery_mode = "mirror"\n$/.exec(headText)
+  requireValue(
+    match !== null && match[0] === headText && attemptPattern.test(match[1]),
+    'WRONG_REPAIR',
+  )
+  const attemptId = match[1]
+  requireValue(context.attemptId === undefined || attemptId === context.attemptId, 'WRONG_ATTEMPT')
   requireValue(file.sha === head.get(target).sha, 'BLOB_ID_MISMATCH')
   validatePull(capture.pullAfter, context)
   return {
-    validatorVersion: 'dc-diagnostic-v1',
+    validatorVersion: 'dc-diagnostic-v2',
     repositoryId: context.repositoryId,
     pullNumber: context.pullNumber,
     authorId: context.authorId,
-    attemptId: context.attemptId,
+    attemptId,
     headSha: context.expectedHeadSha,
     outcome: 'valid_data_change',
-    clue: 'Recovery profile accepted. Read the legacy diagnostic failure for service routing information.',
   }
 }
