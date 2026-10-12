@@ -1,0 +1,37 @@
+name: EdgeOptic diagnostic
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+permissions: {}
+concurrency:
+  group: diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  diagnostic:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      DIAGNOSTIC_REPOSITORY_ID: ${{ vars.DIAGNOSTIC_REPOSITORY_ID }}
+      DIAGNOSTIC_BASE_SHA: ${{ vars.DIAGNOSTIC_BASE_SHA }}
+      DIAGNOSTIC_SERVICE_PHONE: ${{ vars.DIAGNOSTIC_SERVICE_PHONE }}
+    steps:
+      - name: Retrieve frozen diagnostic utility
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$DIAGNOSTIC_BASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          mkdir -p "$RUNNER_TEMP/edgeoptic-trusted"
+          for file in collect.mjs diagnostic.mjs validate.mjs; do
+            curl --fail --silent --show-error --proto '=https' --max-time 10 --max-filesize 32768 \
+              "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$DIAGNOSTIC_BASE_SHA/validator/$file" \
+              --output "$RUNNER_TEMP/edgeoptic-trusted/$file"
+          done
+      - name: Evaluate legacy recovery request
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node "$RUNNER_TEMP/edgeoptic-trusted/collect.mjs"

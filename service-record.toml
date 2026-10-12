@@ -1,4 +1,4 @@
-revision = "r3"
+revision = "r4"
 model = "EO-R8"
-recovery_mode = "mirror"
-scope = "installations commissioned with remote replication"
+recovery_mode = "local-only"
+scope = "retired network transport; local-only default for new diagnostic requests"
