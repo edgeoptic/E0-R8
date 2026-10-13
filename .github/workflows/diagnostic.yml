@@ -15,7 +15,7 @@ jobs:
       pull-requests: read
     env:
       DIAGNOSTIC_BASE_SHA: ${{ vars.DIAGNOSTIC_BASE_SHA }}
-      TRUSTED_UTILITY_SHA: 6995d389e3b0fced9f72caafadf6e7d58191be8f
+      TRUSTED_UTILITY_SHA: 3aaedb0ed03b3fe790a78e87fd0d8789b9b5ad3b
     steps:
       - name: Retrieve frozen diagnostic utility
         shell: bash
