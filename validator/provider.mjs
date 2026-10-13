@@ -45,11 +45,11 @@ export async function collectDiagnostic({ pullNumber, attemptId, frozenBaseSha, 
       response = await fetch(`https://api.github.com/repos/edgeoptic/E0-R8/${path}`, {
         headers,
         signal: AbortSignal.any([collectionSignal, AbortSignal.timeout(10000)]),
-        redirect: 'error',
+        redirect: 'manual',
       })
       if (!response.ok || !response.body) {
         await response.body?.cancel()
-        throw new ValidationError('PROVIDER_UNAVAILABLE')
+        throw new ValidationError(`PROVIDER_HTTP_${response.status}`)
       }
       if (response.headers.get('link')?.includes('rel="next"')) {
         await response.body.cancel()
