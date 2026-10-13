@@ -1,2 +1,2 @@
 request_id = "93d12b4e-37ad-444b-9297-a9dd3da7cf15"
-recovery_mode = "mirror"
+recovery_mode = "local-only"
